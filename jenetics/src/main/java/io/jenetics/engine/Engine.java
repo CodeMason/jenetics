@@ -133,6 +133,7 @@ public final class Engine<
 	private final Selector<G, C> _survivorsSelector;
 	private final Selector<G, C> _offspringSelector;
 	private final Alterer<G, C> _alterer;
+	private final PopulationFilter<G, C> _populationFilter;
 	private final Predicate<? super Phenotype<G, C>> _validator;
 	private final Optimize _optimize;
 	private final int _offspringCount;
@@ -157,6 +158,7 @@ public final class Engine<
 	 * @param survivorsSelector the selector used for selecting the survivors
 	 * @param offspringSelector the selector used for selecting the offspring
 	 * @param alterer the alterer used for altering the offspring
+	 * @param populationFilter
 	 * @param validator phenotype validator which can override the default
 	 *        implementation the {@link Phenotype#isValid()} method.
 	 * @param optimize the kind of optimization (minimize or maximize)
@@ -172,21 +174,22 @@ public final class Engine<
 	 *         than one.
 	 */
 	Engine(
-		final Function<? super Genotype<G>, ? extends C> fitnessFunction,
-		final Factory<Genotype<G>> genotypeFactory,
-		final Function<? super C, ? extends C> fitnessScaler,
-		final Selector<G, C> survivorsSelector,
-		final Selector<G, C> offspringSelector,
-		final Alterer<G, C> alterer,
-		final Predicate<? super Phenotype<G, C>> validator,
-		final Optimize optimize,
-		final int offspringCount,
-		final int survivorsCount,
-		final long maximalPhenotypeAge,
-		final Executor executor,
-		final Clock clock,
-		final int individualCreationRetries,
-		final UnaryOperator<EvolutionResult<G, C>> mapper
+			final Function<? super Genotype<G>, ? extends C> fitnessFunction,
+			final Factory<Genotype<G>> genotypeFactory,
+			final Function<? super C, ? extends C> fitnessScaler,
+			final Selector<G, C> survivorsSelector,
+			final Selector<G, C> offspringSelector,
+			final Alterer<G, C> alterer,
+			final PopulationFilter<G, C> populationFilter,
+			final Predicate<? super Phenotype<G, C>> validator,
+			final Optimize optimize,
+			final int offspringCount,
+			final int survivorsCount,
+			final long maximalPhenotypeAge,
+			final Executor executor,
+			final Clock clock,
+			final int individualCreationRetries,
+			final UnaryOperator<EvolutionResult<G, C>> mapper
 	) {
 		_fitnessFunction = requireNonNull(fitnessFunction);
 		_fitnessScaler = requireNonNull(fitnessScaler);
@@ -194,6 +197,7 @@ public final class Engine<
 		_survivorsSelector = requireNonNull(survivorsSelector);
 		_offspringSelector = requireNonNull(offspringSelector);
 		_alterer = requireNonNull(alterer);
+		_populationFilter = requireNonNull(populationFilter);
 		_validator = requireNonNull(validator);
 		_optimize = requireNonNull(optimize);
 
@@ -285,6 +289,7 @@ public final class Engine<
 
 		// Filter and replace invalid and old survivor individuals.
 		final CompletableFuture<TimedResult<FilterResult<G, C>>> filteredSurvivors =
+
 			_executor.thenApply(survivors, pop ->
 				filter(pop.result, start.getGeneration()),
 				_clock
@@ -372,23 +377,9 @@ public final class Engine<
 		final Seq<Phenotype<G, C>> population,
 		final long generation
 	) {
-		int killCount = 0;
-		int invalidCount = 0;
-
-		final MSeq<Phenotype<G, C>> pop = MSeq.of(population);
-		for (int i = 0, n = pop.size(); i < n; ++i) {
-			final Phenotype<G, C> individual = pop.get(i);
-
-			if (!_validator.test(individual)) {
-				pop.set(i, newPhenotype(generation));
-				++invalidCount;
-			} else if (individual.getAge(generation) > _maximalPhenotypeAge) {
-				pop.set(i, newPhenotype(generation));
-				++killCount;
-			}
-		}
-
-		return new FilterResult<>(pop.toISeq(), killCount, invalidCount);
+		return _populationFilter.filter(
+				_validator, population, () -> newPhenotype(generation), _maximalPhenotypeAge, generation
+		);
 	}
 
 	// Create a new and valid phenotype
@@ -1086,6 +1077,7 @@ public final class Engine<
 			new SinglePointCrossover<G, C>(0.2),
 			new Mutator<>(0.15)
 		);
+		private PopulationFilter<G, C> _populationFilter = new DefaultPopulationFilter<>();
 		private Predicate<? super Phenotype<G, C>> _validator = Phenotype::isValid;
 		private Optimize _optimize = Optimize.MAXIMUM;
 		private double _offspringFraction = 0.6;
@@ -1279,6 +1271,17 @@ public final class Engine<
 		 */
 		public Builder<G, C> optimize(final Optimize optimize) {
 			_optimize = requireNonNull(optimize);
+			return this;
+		}
+
+		/**
+		 * The population filter used by the engine. <i>Default value is {@link DefaultPopulationFilter}</i>
+		 *
+		 * @param populationFilter the population filter to use
+		 * @return {@code this} builder, for command chaining
+		 */
+		public Builder<G, C> populationFilter(final PopulationFilter<G, C> populationFilter) {
+			_populationFilter = populationFilter;
 			return this;
 		}
 
@@ -1501,6 +1504,7 @@ public final class Engine<
 				_survivorsSelector,
 				_offspringSelector,
 				_alterer,
+				_populationFilter,
 				_validator,
 				_optimize,
 				getOffspringCount(),
