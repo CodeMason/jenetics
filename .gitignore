@@ -13,11 +13,16 @@ test-output/**
 output/**
 *.jar
 *evSOLve*
+pom.xml
 
 # Gradle
 **/.gradle/**
 .groovy/*
 gradle-app.setting
+
+
+## Maven
+target/
 
 ## Eclipse
 .settings/**
