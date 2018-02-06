@@ -19,17 +19,22 @@
  */
 package io.jenetics.engine;
 
+import static io.jenetics.internal.util.require.probability;
 import static java.lang.Math.round;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
-import static io.jenetics.internal.util.require.probability;
 
 import java.time.Clock;
+import java.util.ArrayList;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.function.UnaryOperator;
@@ -385,18 +390,29 @@ public final class Engine<
 	// Create a new and valid phenotype
 	private Phenotype<G, C> newPhenotype(final long generation) {
 		int count = 0;
-		Phenotype<G, C> phenotype;
-		do {
-			phenotype = Phenotype.of(
-				_genotypeFactory.newInstance(),
-				generation,
-				_fitnessFunction,
-				_fitnessScaler
-			);
-		} while (++count < _individualCreationRetries &&
-				!_validator.test(phenotype));
-
-		return phenotype;
+		AtomicReference<Phenotype<G, C>> phenotype = new AtomicReference<>();
+		AtomicBoolean keepRunning = new AtomicBoolean(true);
+		AtomicInteger remaining = new AtomicInteger(_individualCreationRetries);
+		List<CompletableFuture<?>> futures = new ArrayList<>();
+		for (int i = 0 ; i < 12; ++i) {
+			futures.add(_executor.<Void>async(() -> {
+				Phenotype<G, C> current;
+				do {
+					current = Phenotype.of(
+							_genotypeFactory.newInstance(),
+							generation,
+							_fitnessFunction,
+							_fitnessScaler
+					);
+				} while (phenotype.get() == null &&
+						remaining.decrementAndGet() > 0 &&
+						!_validator.test(current));
+				phenotype.compareAndSet(null, current);
+				return null;
+			}, Clock.systemUTC()));
+		}
+		futures.forEach(CompletableFuture::join);
+		return phenotype.get();
 	}
 
 	// Evaluates the fitness function of the give population concurrently.
