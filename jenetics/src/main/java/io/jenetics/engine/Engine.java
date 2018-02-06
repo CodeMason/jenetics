@@ -395,7 +395,7 @@ public final class Engine<
 		AtomicInteger remaining = new AtomicInteger(_individualCreationRetries);
 		List<CompletableFuture<?>> futures = new ArrayList<>();
 		for (int i = 0 ; i < 12; ++i) {
-			futures.add(_executor.<Void>async(() -> {
+			futures.add(_executor.async(() -> {
 				Phenotype<G, C> current;
 				do {
 					current = Phenotype.of(
@@ -408,7 +408,7 @@ public final class Engine<
 						remaining.decrementAndGet() > 0 &&
 						!_validator.test(current));
 				phenotype.compareAndSet(null, current);
-				return null;
+				return Boolean.FALSE;
 			}, Clock.systemUTC()));
 		}
 		futures.forEach(CompletableFuture::join);
