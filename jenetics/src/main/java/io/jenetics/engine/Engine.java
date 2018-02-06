@@ -32,7 +32,6 @@ import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ForkJoinPool;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
@@ -144,6 +143,7 @@ public final class Engine<
 	private final int _offspringCount;
 	private final int _survivorsCount;
 	private final long _maximalPhenotypeAge;
+	private final boolean _parallelPhenotypeGeneration;
 
 	// Execution context for concurrent execution of evolving steps.
 	private final TimedExecutor _executor;
@@ -174,6 +174,7 @@ public final class Engine<
 	 * @param clock the clock used for calculating the timing results
 	 * @param individualCreationRetries the maximal number of attempts for
 	 *        creating a valid individual.
+	 * @param parallelPhenotypeGeneration
 	 * @throws NullPointerException if one of the arguments is {@code null}
 	 * @throws IllegalArgumentException if the given integer values are smaller
 	 *         than one.
@@ -194,6 +195,7 @@ public final class Engine<
 			final Executor executor,
 			final Clock clock,
 			final int individualCreationRetries,
+			boolean parallelPhenotypeGeneration,
 			final UnaryOperator<EvolutionResult<G, C>> mapper
 	) {
 		_fitnessFunction = requireNonNull(fitnessFunction);
@@ -212,6 +214,7 @@ public final class Engine<
 
 		_executor = new TimedExecutor(requireNonNull(executor));
 		_clock = requireNonNull(clock);
+		_parallelPhenotypeGeneration = parallelPhenotypeGeneration;
 
 		if (individualCreationRetries < 0) {
 			throw new IllegalArgumentException(format(
@@ -389,30 +392,44 @@ public final class Engine<
 
 	// Create a new and valid phenotype
 	private Phenotype<G, C> newPhenotype(final long generation) {
-		int count = 0;
-		AtomicReference<Phenotype<G, C>> phenotype = new AtomicReference<>();
-		AtomicBoolean keepRunning = new AtomicBoolean(true);
-		AtomicInteger remaining = new AtomicInteger(_individualCreationRetries);
-		List<CompletableFuture<?>> futures = new ArrayList<>();
-		for (int i = 0 ; i < 12; ++i) {
-			futures.add(_executor.async(() -> {
-				Phenotype<G, C> current;
-				do {
-					current = Phenotype.of(
-							_genotypeFactory.newInstance(),
-							generation,
-							_fitnessFunction,
-							_fitnessScaler
-					);
-				} while (phenotype.get() == null &&
-						remaining.decrementAndGet() > 0 &&
-						!_validator.test(current));
-				phenotype.compareAndSet(null, current);
-				return Boolean.FALSE;
-			}, Clock.systemUTC()));
+		if (_parallelPhenotypeGeneration) {
+			AtomicReference<Phenotype<G, C>> phenotype = new AtomicReference<>();
+			AtomicInteger remaining = new AtomicInteger(_individualCreationRetries);
+			List<CompletableFuture<?>> futures = new ArrayList<>();
+			for (int i = 0; i < 12; ++i) {
+				futures.add(_executor.async(() -> {
+					Phenotype<G, C> current;
+					do {
+						current = Phenotype.of(
+								_genotypeFactory.newInstance(),
+								generation,
+								_fitnessFunction,
+								_fitnessScaler
+						);
+					} while (phenotype.get() == null &&
+							remaining.decrementAndGet() > 0 &&
+							!_validator.test(current));
+					phenotype.compareAndSet(null, current);
+					return Boolean.FALSE;
+				}, Clock.systemUTC()));
+			}
+			futures.forEach(CompletableFuture::join);
+			return phenotype.get();
+		} else {
+			int count = 0;
+			Phenotype<G, C> phenotype;
+			do {
+				phenotype = Phenotype.of(
+						_genotypeFactory.newInstance(),
+						generation,
+						_fitnessFunction,
+						_fitnessScaler
+				);
+				count++;
+			} while (count < _individualCreationRetries &&
+					!_validator.test(phenotype));
+			return phenotype;
 		}
-		futures.forEach(CompletableFuture::join);
-		return phenotype.get();
 	}
 
 	// Evaluates the fitness function of the give population concurrently.
@@ -1105,6 +1122,7 @@ public final class Engine<
 		private Clock _clock = NanoClock.systemUTC();
 
 		private int _individualCreationRetries = 10;
+		private boolean _parallelPhenotypeGeneration = false;
 		private UnaryOperator<EvolutionResult<G, C>> _mapper = r -> r;
 
 		private Builder(
@@ -1463,6 +1481,17 @@ public final class Engine<
 		}
 
 		/**
+		 * Enable phenotype generation
+		 *
+		 * @param parallelPhenotypeGeneration whether or not to enable parallel phenotype generation
+		 * @return {@code this} builder, for command chaining
+		 */
+		public Builder<G, C> parallelPhenotypeGeneration(final boolean parallelPhenotypeGeneration) {
+			_parallelPhenotypeGeneration = parallelPhenotypeGeneration;
+			return this;
+		}
+
+		/**
 		 * The maximal number of attempt before the {@code Engine} gives up
 		 * creating a valid individual ({@code Phenotype}). <i>Default values is
 		 * set to {@code 10}.</i>
@@ -1529,6 +1558,7 @@ public final class Engine<
 				_executor,
 				_clock,
 				_individualCreationRetries,
+				_parallelPhenotypeGeneration,
 				_mapper
 			);
 		}
